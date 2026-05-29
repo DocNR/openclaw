@@ -3,8 +3,6 @@ import {
   normalizeTogetherModelId,
 } from "../plugin-sdk/provider-model-id-normalize.js";
 import { getCurrentPluginMetadataSnapshot } from "../plugins/current-plugin-metadata-snapshot.js";
-import type { PluginManifestRecord } from "../plugins/manifest-registry.js";
-import type { PluginManifestModelIdNormalizationProvider } from "../plugins/manifest.js";
 import { resolvePluginMetadataSnapshot } from "../plugins/plugin-metadata-snapshot.js";
 import { normalizeLowercaseStringOrEmpty } from "../shared/string-coerce.js";
 import { normalizeProviderId } from "./provider-id.js";
@@ -16,84 +14,26 @@ type StaticModelRef = {
 
 export type ProviderModelIdNormalizationOptions = {
   allowManifestNormalization?: boolean;
-  manifestPlugins?: readonly Pick<PluginManifestRecord, "modelIdNormalization">[];
+  manifestPlugins?: readonly ModelIdNormalizationPluginRecord[];
 };
 
-function collectManifestModelIdNormalizationPolicies(
-  plugins: readonly Pick<PluginManifestRecord, "modelIdNormalization">[],
-): Map<string, PluginManifestModelIdNormalizationProvider> {
-  const policies = new Map<string, PluginManifestModelIdNormalizationProvider>();
-  for (const plugin of plugins) {
-    for (const [provider, policy] of Object.entries(plugin.modelIdNormalization?.providers ?? {})) {
-      policies.set(normalizeLowercaseStringOrEmpty(provider), policy);
-    }
-  }
-  return policies;
-}
+type ModelIdPrefixRule = {
+  modelPrefix: string;
+  prefix: string;
+};
 
-function hasProviderPrefix(modelId: string): boolean {
-  return modelId.includes("/");
-}
+type ModelIdNormalizationProvider = {
+  aliases?: Record<string, string>;
+  stripPrefixes?: string[];
+  prefixWhenBare?: string;
+  prefixWhenBareAfterAliasStartsWith?: ModelIdPrefixRule[];
+};
 
-function formatPrefixedModelId(prefix: string, modelId: string): string {
-  return `${prefix.replace(/\/+$/u, "")}/${modelId.replace(/^\/+/u, "")}`;
-}
-
-function normalizeProviderModelIdWithManifestPlugins(params: {
-  provider: string;
-  plugins: readonly Pick<PluginManifestRecord, "modelIdNormalization">[];
-  modelId: string;
-}): string | undefined {
-  const policy = collectManifestModelIdNormalizationPolicies(params.plugins).get(
-    normalizeLowercaseStringOrEmpty(params.provider),
-  );
-  if (!policy) {
-    return undefined;
-  }
-
-  let modelId = params.modelId.trim();
-  if (!modelId) {
-    return modelId;
-  }
-
-  for (const prefix of policy.stripPrefixes ?? []) {
-    const normalizedPrefix = normalizeLowercaseStringOrEmpty(prefix);
-    if (normalizedPrefix && normalizeLowercaseStringOrEmpty(modelId).startsWith(normalizedPrefix)) {
-      modelId = modelId.slice(prefix.length);
-      break;
-    }
-  }
-
-  modelId = policy.aliases?.[normalizeLowercaseStringOrEmpty(modelId)] ?? modelId;
-
-  if (!hasProviderPrefix(modelId)) {
-    for (const rule of policy.prefixWhenBareAfterAliasStartsWith ?? []) {
-      if (normalizeLowercaseStringOrEmpty(modelId).startsWith(rule.modelPrefix.toLowerCase())) {
-        return formatPrefixedModelId(rule.prefix, modelId);
-      }
-    }
-    if (policy.prefixWhenBare) {
-      return formatPrefixedModelId(policy.prefixWhenBare, modelId);
-    }
-  }
-
-  return modelId;
-}
-
-function resolveManifestNormalizationPlugins(
-  options: ProviderModelIdNormalizationOptions,
-): readonly Pick<PluginManifestRecord, "modelIdNormalization">[] | undefined {
-  if (options.manifestPlugins) {
-    return options.manifestPlugins;
-  }
-  return (
-    getCurrentPluginMetadataSnapshot({
-      allowWorkspaceScopedSnapshot: true,
-      requireDefaultDiscoveryContext: true,
-    })?.plugins ??
-    resolvePluginMetadataSnapshot({ config: {}, allowWorkspaceScopedCurrent: true }).plugins
-  );
-}
+type ModelIdNormalizationPluginRecord = {
+  modelIdNormalization?: {
+    providers?: Record<string, ModelIdNormalizationProvider>;
+  };
+};
 
 export function modelKey(provider: string, model: string): string {
   const providerId = provider.trim();
@@ -120,20 +60,86 @@ export function normalizeStaticProviderModelId(
   if (options.allowManifestNormalization === false) {
     return normalizeBuiltInProviderModelId(normalizedProvider, model);
   }
-  const manifestPlugins = resolveManifestNormalizationPlugins(options);
-  const manifestModelId = manifestPlugins
-    ? normalizeProviderModelIdWithManifestPlugins({
+  const manifestModelId =
+    normalizeProviderModelIdWithManifest({
+      provider: normalizedProvider,
+      plugins: options.manifestPlugins,
+      context: {
         provider: normalizedProvider,
-        plugins: manifestPlugins,
         modelId: model,
-      })
-    : undefined;
-  return normalizeBuiltInProviderModelId(normalizedProvider, manifestModelId ?? model);
+      },
+    }) ?? model;
+  return normalizeBuiltInProviderModelId(normalizedProvider, manifestModelId);
+}
+
+function normalizeProviderModelIdWithManifest(params: {
+  provider: string;
+  plugins?: readonly ModelIdNormalizationPluginRecord[];
+  context: {
+    provider: string;
+    modelId: string;
+  };
+}): string | undefined {
+  const providerId = normalizeLowercaseStringOrEmpty(params.provider);
+  const plugins =
+    params.plugins ??
+    getCurrentPluginMetadataSnapshot({
+      allowWorkspaceScopedSnapshot: true,
+      requireDefaultDiscoveryContext: true,
+    })?.plugins ??
+    resolvePluginMetadataSnapshot({
+      config: {},
+      allowWorkspaceScopedCurrent: true,
+    }).plugins;
+  const policy = plugins
+    ?.flatMap((plugin) => Object.entries(plugin.modelIdNormalization?.providers ?? {}))
+    .find(([provider]) => normalizeLowercaseStringOrEmpty(provider) === providerId)?.[1];
+  if (!policy) {
+    return undefined;
+  }
+
+  let modelId = params.context.modelId.trim();
+  if (!modelId) {
+    return modelId;
+  }
+
+  for (const prefix of policy.stripPrefixes ?? []) {
+    const normalizedPrefix = normalizeLowercaseStringOrEmpty(prefix);
+    if (normalizedPrefix && normalizeLowercaseStringOrEmpty(modelId).startsWith(normalizedPrefix)) {
+      modelId = modelId.slice(prefix.length);
+      break;
+    }
+  }
+
+  modelId = policy.aliases?.[normalizeLowercaseStringOrEmpty(modelId)] ?? modelId;
+  if (modelId.includes("/")) {
+    return modelId;
+  }
+
+  for (const rule of policy.prefixWhenBareAfterAliasStartsWith ?? []) {
+    if (normalizeLowercaseStringOrEmpty(modelId).startsWith(rule.modelPrefix.toLowerCase())) {
+      return formatPrefixedModelId(rule.prefix, modelId);
+    }
+  }
+  return policy.prefixWhenBare ? formatPrefixedModelId(policy.prefixWhenBare, modelId) : modelId;
+}
+
+function formatPrefixedModelId(prefix: string, modelId: string): string {
+  return `${prefix.replace(/\/+$/u, "")}/${modelId.replace(/^\/+/u, "")}`;
 }
 
 function normalizeBuiltInProviderModelId(provider: string, model: string): string {
+  if (provider === "anthropic") {
+    return normalizeAnthropicAlias(model);
+  }
   if (provider === "google" || provider === "google-gemini-cli" || provider === "google-vertex") {
     return normalizeGooglePreviewModelId(model);
+  }
+  if (provider === "huggingface") {
+    const prefix = "huggingface/";
+    return normalizeLowercaseStringOrEmpty(model).startsWith(prefix)
+      ? model.slice(prefix.length)
+      : model;
   }
   if (provider === "openrouter") {
     const trimmed = model.trim();
@@ -157,7 +163,21 @@ function normalizeBuiltInProviderModelId(provider: string, model: string): strin
   if (provider === "together") {
     return normalizeTogetherModelId(model);
   }
+  if (provider === "vercel-ai-gateway") {
+    const anthropicModel = normalizeAnthropicAlias(model);
+    return anthropicModel.startsWith("claude-") ? `anthropic/${anthropicModel}` : anthropicModel;
+  }
   return model;
+}
+
+function normalizeAnthropicAlias(model: string): string {
+  const aliases: Record<string, string> = {
+    "opus-4.6": "claude-opus-4-6",
+    "opus-4.5": "claude-opus-4-5",
+    "sonnet-4.6": "claude-sonnet-4-6",
+    "sonnet-4.5": "claude-sonnet-4-5",
+  };
+  return aliases[normalizeLowercaseStringOrEmpty(model)] ?? model;
 }
 
 export function normalizeConfiguredProviderCatalogModelId(
