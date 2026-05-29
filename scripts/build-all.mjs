@@ -51,6 +51,7 @@ export const BUILD_ALL_STEPS = [
         "tsconfig.plugin-sdk.dts.json",
         "src/plugin-sdk",
         "packages/memory-host-sdk/src",
+        "packages/media-generation-core/src",
         "src/types",
         "src/video-generation/dashscope-compatible.ts",
         "src/video-generation/types.ts",
