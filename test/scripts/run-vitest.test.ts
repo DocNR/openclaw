@@ -8,6 +8,8 @@ import {
   resolveMissingVitestDependencyMessage,
   resolveMissingExplicitTestFiles,
   resolveRunVitestSpawnEnv,
+  resolveTestProjectsDelegationArgs,
+  resolveTestProjectsRunnerEnv,
   resolveVitestCliEntry,
   resolveVitestNodeArgs,
   resolveVitestNoOutputTimeoutMs,
@@ -113,6 +115,94 @@ describe("scripts/run-vitest", () => {
   it("does not force no-test failure for globs or basename filters", () => {
     const argv = ["run", "run-vitest.test.ts", "test/**/*.test.ts"];
     expect(resolveExplicitTestFileNoPassArgs(argv)).toBe(argv);
+  });
+
+  it("delegates bare explicit test files to the project router", () => {
+    expect(resolveTestProjectsDelegationArgs(["test/scripts/run-vitest.test.ts"])).toEqual([
+      "test/scripts/run-vitest.test.ts",
+    ]);
+    expect(resolveTestProjectsDelegationArgs(["run", "test/scripts/run-vitest.test.ts"])).toEqual([
+      "test/scripts/run-vitest.test.ts",
+    ]);
+    expect(
+      resolveTestProjectsDelegationArgs([
+        "run",
+        "test/scripts/run-vitest.test.ts",
+        "--reporter=verbose",
+      ]),
+    ).toEqual(["test/scripts/run-vitest.test.ts", "--reporter=verbose"]);
+    expect(
+      resolveTestProjectsDelegationArgs([
+        "--reporter=verbose",
+        "run",
+        "test/scripts/run-vitest.test.ts",
+      ]),
+    ).toEqual(["--reporter=verbose", "test/scripts/run-vitest.test.ts"]);
+    expect(
+      resolveTestProjectsDelegationArgs([
+        "run",
+        "test/scripts/run-vitest.test.ts",
+        "--",
+        "--watch",
+      ]),
+    ).toEqual(["test/scripts/run-vitest.test.ts", "--", "--watch"]);
+    expect(
+      resolveTestProjectsDelegationArgs([
+        "run",
+        "test/scripts/run-vitest.test.ts",
+        "--",
+        "--reporter=verbose",
+      ]),
+    ).toEqual(["test/scripts/run-vitest.test.ts", "--", "--reporter=verbose"]);
+  });
+
+  it("keeps direct Vitest runs when project routing could change option semantics", () => {
+    expect(
+      resolveTestProjectsDelegationArgs([
+        "run",
+        "--config",
+        "test/vitest/vitest.tooling.config.ts",
+        "test/scripts/run-vitest.test.ts",
+      ]),
+    ).toBeNull();
+    expect(
+      resolveTestProjectsDelegationArgs(["--root", "packages/example", "src/example.test.ts"]),
+    ).toBeNull();
+    expect(
+      resolveTestProjectsDelegationArgs([
+        "--project",
+        "tooling",
+        "test/scripts/run-vitest.test.ts",
+      ]),
+    ).toBeNull();
+    expect(
+      resolveTestProjectsDelegationArgs(["watch", "test/scripts/run-vitest.test.ts"]),
+    ).toBeNull();
+    expect(
+      resolveTestProjectsDelegationArgs(["dev", "test/scripts/run-vitest.test.ts"]),
+    ).toBeNull();
+    expect(
+      resolveTestProjectsDelegationArgs(["--watch", "test/scripts/run-vitest.test.ts"]),
+    ).toBeNull();
+    expect(
+      resolveTestProjectsDelegationArgs(["--run=false", "test/scripts/run-vitest.test.ts"]),
+    ).toBeNull();
+    expect(
+      resolveTestProjectsDelegationArgs(["--no-run", "test/scripts/run-vitest.test.ts"]),
+    ).toBeNull();
+    expect(
+      resolveTestProjectsDelegationArgs(["--run", "false", "test/scripts/run-vitest.test.ts"]),
+    ).toBeNull();
+    expect(
+      resolveTestProjectsDelegationArgs([
+        "--testNamePattern",
+        "run",
+        "test/scripts/run-vitest.test.ts",
+      ]),
+    ).toBeNull();
+    expect(
+      resolveTestProjectsDelegationArgs(["run", "test/scripts/run-vitest.test.ts", "-t", "src"]),
+    ).toBeNull();
   });
 
   it("reports missing explicit test files before Vitest can silently ignore them", () => {
@@ -301,6 +391,21 @@ describe("scripts/run-vitest", () => {
       PATH: "/usr/bin",
     });
     expect(resolveRunVitestSpawnEnv({ PATH: "/usr/bin" }, ["dev"])).toEqual({
+      PATH: "/usr/bin",
+    });
+  });
+
+  it("does not force the stall watchdog into delegated runner environments", () => {
+    expect(resolveTestProjectsRunnerEnv({ PATH: "/usr/bin" })).toEqual({
+      PATH: "/usr/bin",
+    });
+    expect(
+      resolveTestProjectsRunnerEnv({
+        OPENCLAW_VITEST_NO_OUTPUT_TIMEOUT_MS: "2500",
+        PATH: "/usr/bin",
+      }),
+    ).toEqual({
+      OPENCLAW_VITEST_NO_OUTPUT_TIMEOUT_MS: "2500",
       PATH: "/usr/bin",
     });
   });
