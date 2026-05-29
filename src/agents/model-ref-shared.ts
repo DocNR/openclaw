@@ -4,11 +4,11 @@ import {
 } from "../plugin-sdk/provider-model-id-normalize.js";
 import { getCurrentPluginMetadataSnapshot } from "../plugins/current-plugin-metadata-snapshot.js";
 import {
-  DEFAULT_MANIFEST_MODEL_ID_NORMALIZATION_PLUGINS,
   type ManifestModelIdNormalizationPlugin,
   normalizeProviderModelIdWithManifestPlugins,
 } from "../plugins/manifest-model-id-normalization-policy.js";
 import type { PluginManifestRecord } from "../plugins/manifest-registry.js";
+import { resolvePluginMetadataSnapshot } from "../plugins/plugin-metadata-snapshot.js";
 import { normalizeLowercaseStringOrEmpty } from "../shared/string-coerce.js";
 import { normalizeProviderId } from "./provider-id.js";
 
@@ -27,7 +27,8 @@ function resolveDefaultManifestModelIdNormalizationPlugins(): readonly ManifestM
     getCurrentPluginMetadataSnapshot({
       allowWorkspaceScopedSnapshot: true,
       requireDefaultDiscoveryContext: true,
-    })?.plugins ?? DEFAULT_MANIFEST_MODEL_ID_NORMALIZATION_PLUGINS
+    })?.plugins ??
+    resolvePluginMetadataSnapshot({ config: {}, allowWorkspaceScopedCurrent: true }).plugins
   );
 }
 
