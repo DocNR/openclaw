@@ -14,6 +14,7 @@ import {
   createPluginModuleLoaderCache,
   getCachedPluginModuleLoader,
 } from "./plugin-module-loader-cache.js";
+import { createProviderRuntimeProjection } from "./provider-plugin-projection.js";
 import { resolveDiscoveredProviderPluginIds } from "./providers.js";
 import { resolvePluginProviders } from "./providers.runtime.js";
 import type { ProviderPlugin } from "./types.js";
@@ -33,6 +34,8 @@ type ProviderDiscoveryEntryResult = {
   pluginRecords: PluginManifestRecord[];
   entryPluginIds: Set<string>;
   manifestEntryPluginIds: Set<string>;
+  fallbackPluginIds: Set<string>;
+  manifestProviderRefs: WeakSet<ProviderPlugin>;
 };
 
 const providerDiscoveryModuleLoaders = createPluginModuleLoaderCache();
@@ -265,7 +268,9 @@ function resolveProviderDiscoveryEntryPlugins(params: {
   const entryRecords = pluginRecords.filter((plugin) => plugin.providerDiscoverySource);
   const entryPluginIds = new Set(entryRecords.map((plugin) => plugin.id));
   const manifestProviders = resolveManifestModelCatalogProviders(pluginRecords);
+  const manifestProviderRefs = new WeakSet(manifestProviders);
   const manifestEntryPluginIds = new Set<string>();
+  const fallbackPluginIds = new Set<string>();
   for (const pluginId of manifestProviders.map((provider) => provider.pluginId)) {
     if (pluginId) {
       entryPluginIds.add(pluginId);
@@ -280,6 +285,8 @@ function resolveProviderDiscoveryEntryPlugins(params: {
       pluginRecords,
       entryPluginIds,
       manifestEntryPluginIds,
+      fallbackPluginIds,
+      manifestProviderRefs,
     };
   }
   if (params.requireCompleteDiscoveryEntryCoverage && !complete) {
@@ -289,6 +296,8 @@ function resolveProviderDiscoveryEntryPlugins(params: {
       pluginRecords,
       entryPluginIds,
       manifestEntryPluginIds,
+      fallbackPluginIds,
+      manifestProviderRefs,
     };
   }
   const providers: ProviderPlugin[] = [];
@@ -299,29 +308,50 @@ function resolveProviderDiscoveryEntryPlugins(params: {
         modulePath: manifest.providerDiscoverySource!,
         rootDir: manifest.rootDir,
       });
-      providers.push(
-        ...normalizeDiscoveryModule(moduleExport).map((provider) =>
-          Object.assign({}, provider, { pluginId: manifest.id }),
-        ),
-      );
+      const entryProviders = normalizeDiscoveryModule(moduleExport);
+      const projectedProviders: ProviderPlugin[] = [];
+      let hasProjectionFailure = false;
+      for (const provider of entryProviders) {
+        const projected = createProviderRuntimeProjection({ pluginId: manifest.id, provider });
+        if (!projected) {
+          hasProjectionFailure = true;
+          continue;
+        }
+        projectedProviders.push(projected);
+      }
+      if (hasProjectionFailure) {
+        if (!manifestEntryPluginIds.has(manifest.id)) {
+          entryPluginIds.delete(manifest.id);
+        }
+        fallbackPluginIds.add(manifest.id);
+      }
+      providers.push(...projectedProviders);
     } catch {
       // Discovery fast path is optional. Fall back to the full plugin loader
       // below so existing plugin diagnostics/load behavior remains canonical.
+      if (!manifestEntryPluginIds.has(manifest.id)) {
+        entryPluginIds.delete(manifest.id);
+      }
+      fallbackPluginIds.add(manifest.id);
       return {
         providers: manifestProviders,
         complete: false,
         pluginRecords,
         entryPluginIds,
         manifestEntryPluginIds,
+        fallbackPluginIds,
+        manifestProviderRefs,
       };
     }
   }
   return {
     providers: [...manifestProviders, ...providers],
-    complete,
+    complete: complete && fallbackPluginIds.size === 0,
     pluginRecords,
     entryPluginIds,
     manifestEntryPluginIds,
+    fallbackPluginIds,
+    manifestProviderRefs,
   };
 }
 
@@ -333,13 +363,19 @@ function resolveSelectiveFullPluginIds(params: {
     .filter((plugin) => !params.entryResult.entryPluginIds.has(plugin.id))
     .filter((plugin) => hasProviderAuthEnvCredential(plugin, params.env))
     .map((plugin) => plugin.id);
-  return sortUniqueStrings(missingEntryCredentialPluginIds);
+  return sortUniqueStrings([
+    ...params.entryResult.fallbackPluginIds,
+    ...missingEntryCredentialPluginIds,
+  ]);
 }
 
 function resolveMissingEntryPluginIds(entryResult: ProviderDiscoveryEntryResult): string[] {
-  return entryResult.pluginRecords
-    .filter((plugin) => !entryResult.entryPluginIds.has(plugin.id))
-    .map((plugin) => plugin.id);
+  return sortUniqueStrings([
+    ...entryResult.fallbackPluginIds,
+    ...entryResult.pluginRecords
+      .filter((plugin) => !entryResult.entryPluginIds.has(plugin.id))
+      .map((plugin) => plugin.id),
+  ]);
 }
 
 function resolveRuntimeEntryProviders(entryResult: ProviderDiscoveryEntryResult): ProviderPlugin[] {
@@ -353,6 +389,17 @@ function resolveRuntimeEntryProviders(entryResult: ProviderDiscoveryEntryResult)
       typeof provider.staticCatalog?.run === "function",
     );
   });
+}
+
+function isFallbackProvider(
+  entryResult: ProviderDiscoveryEntryResult,
+  provider: ProviderPlugin,
+): boolean {
+  return Boolean(
+    provider.pluginId &&
+    entryResult.fallbackPluginIds.has(provider.pluginId) &&
+    !entryResult.manifestProviderRefs.has(provider),
+  );
 }
 
 export function resolvePluginDiscoveryProvidersRuntime(params: {
@@ -371,17 +418,23 @@ export function resolvePluginDiscoveryProvidersRuntime(params: {
   const entryResult = resolveProviderDiscoveryEntryPlugins({ ...params, env });
   const entryProviders = entryResult.providers.filter(hasProviderCatalogHook);
   const runtimeEntryProviders = resolveRuntimeEntryProviders(entryResult);
+  const nonFallbackRuntimeEntryProviders = runtimeEntryProviders.filter(
+    (provider) => !isFallbackProvider(entryResult, provider),
+  );
   if (params.discoveryEntriesOnly === true) {
+    if (params.requireCompleteDiscoveryEntryCoverage && !entryResult.complete) {
+      return [];
+    }
     return entryProviders;
   }
   if (
     entryResult.providers.length > 0 &&
     entryResult.complete &&
-    runtimeEntryProviders.length === entryResult.providers.length
+    nonFallbackRuntimeEntryProviders.length === entryResult.providers.length
   ) {
-    return runtimeEntryProviders;
+    return nonFallbackRuntimeEntryProviders;
   }
-  if (params.onlyPluginIds === undefined && runtimeEntryProviders.length > 0) {
+  if (params.onlyPluginIds === undefined && nonFallbackRuntimeEntryProviders.length > 0) {
     const fullPluginIds = resolveSelectiveFullPluginIds({
       entryResult,
       env,
@@ -395,9 +448,9 @@ export function resolvePluginDiscoveryProvidersRuntime(params: {
             onlyPluginIds: fullPluginIds,
           })
         : [];
-    return [...runtimeEntryProviders, ...fullProviders];
+    return [...nonFallbackRuntimeEntryProviders, ...fullProviders];
   }
-  if (runtimeEntryProviders.length > 0) {
+  if (nonFallbackRuntimeEntryProviders.length > 0) {
     const fullPluginIds = resolveMissingEntryPluginIds(entryResult);
     const fullProviders =
       fullPluginIds.length > 0
@@ -408,13 +461,16 @@ export function resolvePluginDiscoveryProvidersRuntime(params: {
             onlyPluginIds: fullPluginIds,
           })
         : [];
-    return [...runtimeEntryProviders, ...fullProviders];
+    return [...nonFallbackRuntimeEntryProviders, ...fullProviders];
   }
   if (entryProviders.length > 0) {
+    const entryProviderPluginIds = entryProviders
+      .map((provider) => provider.pluginId)
+      .filter((pluginId): pluginId is string => typeof pluginId === "string" && pluginId !== "");
     const fullPluginIds = sortUniqueStrings(
-      entryProviders
-        .map((provider) => provider.pluginId)
-        .filter((pluginId): pluginId is string => typeof pluginId === "string" && pluginId !== ""),
+      entryResult.fallbackPluginIds.size > 0
+        ? [...entryProviderPluginIds, ...resolveMissingEntryPluginIds(entryResult)]
+        : entryProviderPluginIds,
     );
     if (fullPluginIds.length > 0) {
       return resolvePluginProviders({
