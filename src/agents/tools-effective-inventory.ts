@@ -9,6 +9,8 @@ import {
 import { resolveAgentDir, resolveAgentWorkspaceDir, resolveSessionAgentId } from "./agent-scope.js";
 import { createOpenClawCodingTools } from "./agent-tools.js";
 import { resolveEffectiveToolPolicy } from "./agent-tools.policy.js";
+import { resolveContextWindowInfo } from "./context-window-guard.js";
+import { DEFAULT_CONTEXT_TOKENS } from "./defaults.js";
 import { resolveModel } from "./embedded-agent-runner/model.js";
 import { resolveBundledStaticCatalogModel } from "./embedded-agent-runner/model.static-catalog.js";
 import { normalizeStaticProviderModelId } from "./model-ref-shared.js";
@@ -280,6 +282,31 @@ function resolveEffectiveModelCompat(params: {
   return extractModelCompat(match);
 }
 
+function resolveToolCreationModelContext(params: {
+  cfg: OpenClawConfig;
+  provider?: string;
+  modelId?: string;
+  runtimeModel?: ProviderRuntimeModel;
+}): { modelContextTokens?: number; modelContextWindowTokens?: number } {
+  const provider = normalizeProviderId(params.provider ?? "");
+  const modelId = params.modelId?.trim() ?? "";
+  if (!provider || !modelId || !params.runtimeModel) {
+    return {};
+  }
+  const contextInfo = resolveContextWindowInfo({
+    cfg: params.cfg,
+    provider,
+    modelId,
+    modelContextTokens: params.runtimeModel.contextTokens,
+    modelContextWindow: params.runtimeModel.contextWindow,
+    defaultTokens: DEFAULT_CONTEXT_TOKENS,
+  });
+  return {
+    modelContextTokens: params.runtimeModel.contextTokens,
+    modelContextWindowTokens: contextInfo.tokens,
+  };
+}
+
 export function resolveEffectiveToolInventory(
   params: ResolveEffectiveToolInventoryParams,
 ): EffectiveToolInventoryResult {
@@ -307,6 +334,12 @@ export function resolveEffectiveToolInventory(
     modelProvider: params.modelProvider,
     modelId: params.modelId,
   });
+  const modelContext = resolveToolCreationModelContext({
+    cfg: params.cfg,
+    provider: params.modelProvider,
+    modelId: params.modelId,
+    runtimeModel: runtimeModelContext.runtimeModel,
+  });
 
   const effectiveTools = createOpenClawCodingTools({
     agentId,
@@ -317,6 +350,7 @@ export function resolveEffectiveToolInventory(
     modelProvider: params.modelProvider,
     modelId: params.modelId,
     modelApi: runtimeModelContext.modelApi,
+    ...modelContext,
     modelCompat,
     messageProvider: params.messageProvider,
     senderId: params.senderId,

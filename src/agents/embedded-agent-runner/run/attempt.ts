@@ -217,6 +217,7 @@ import { prepareGooglePromptCacheStreamFn } from "../google-prompt-cache.js";
 import { getHistoryLimitFromSessionKey, limitHistoryTurns } from "../history.js";
 import { log } from "../logger.js";
 import { buildEmbeddedMessageActionDiscoveryInput } from "../message-action-discovery-input.js";
+import { readAgentModelContextTokens } from "../model-context-tokens.js";
 import {
   collectPromptCacheToolNames,
   beginPromptCacheObservation,
@@ -1144,6 +1145,8 @@ export async function runEmbeddedAttempt(
             modelId: params.modelId,
             modelCompat: extractModelCompat(params.model),
             modelApi: params.model.api,
+            modelContextTokens:
+              readAgentModelContextTokens(params.model) ?? params.model.contextWindow,
             modelContextWindowTokens: params.model.contextWindow,
             modelAuthMode: resolveModelAuthMode(params.model.provider, params.config, undefined, {
               workspaceDir: effectiveWorkspace,
@@ -1438,6 +1441,8 @@ export async function runEmbeddedAttempt(
       tools: [...tools, ...normalizedBundledTools],
       config: params.config,
       agentId: sessionAgentId,
+      modelContextTokens: readAgentModelContextTokens(params.model) ?? params.model.contextWindow,
+      modelContextWindowTokens: params.model.contextWindow,
     });
     const uncompactedToolSchemaProjection = filterRuntimeCompatibleTools(
       projectedUncompactedEffectiveTools,
@@ -1509,6 +1514,8 @@ export async function runEmbeddedAttempt(
       tools: toolSearch.tools,
       config: params.config,
       agentId: sessionAgentId,
+      modelContextTokens: readAgentModelContextTokens(params.model) ?? params.model.contextWindow,
+      modelContextWindowTokens: params.model.contextWindow,
     });
     const toolSearchSchemaProjection = filterRuntimeCompatibleTools(projectedToolSearchTools);
     logRuntimeToolSchemaQuarantine({
@@ -2352,6 +2359,9 @@ export async function runEmbeddedAttempt(
         localModelLean: isLocalModelLeanEnabled({
           config: params.config,
           agentId: sessionAgentId,
+          modelContextTokens:
+            readAgentModelContextTokens(params.model) ?? params.model.contextWindow,
+          modelContextWindowTokens: params.model.contextWindow,
         }),
         toolCount: effectiveTools.length,
         clientToolCount: clientToolDefs.length,

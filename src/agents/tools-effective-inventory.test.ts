@@ -604,6 +604,54 @@ describe("resolveEffectiveToolInventory", () => {
     );
   });
 
+  it("passes resolved model context into effective tool creation", async () => {
+    const createToolsMock = vi.fn<typeof createOpenClawCodingTools>(() => [
+      mockTool({ name: "exec", label: "Exec", description: "Run shell commands" }),
+    ]);
+    const { resolveEffectiveToolInventory } = await loadHarness({
+      createToolsMock,
+    });
+
+    resolveEffectiveToolInventory({
+      cfg: {
+        agents: {
+          defaults: {
+            contextTokens: 32_000,
+            experimental: {
+              localModelLean: "auto",
+            },
+          },
+        },
+        models: {
+          providers: {
+            ollama: {
+              models: [
+                {
+                  id: "qwen3:8b",
+                  name: "Qwen 3 8B",
+                  api: "ollama",
+                  input: ["text"],
+                  cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+                  contextWindow: 128_000,
+                  maxTokens: 8_192,
+                },
+              ],
+            },
+          },
+        },
+      } as never,
+      modelProvider: "ollama",
+      modelId: "qwen3:8b",
+    });
+
+    expect(createToolsMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        modelApi: "ollama",
+        modelContextWindowTokens: 32_000,
+      }),
+    );
+  });
+
   it("preserves bundled static transport when configured model row omits api", async () => {
     const normalizeToolsMock = vi.fn((options: { tools: AnyAgentTool[] }) => options.tools);
     const { resolveEffectiveToolInventory } = await loadHarness({
